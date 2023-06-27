@@ -121,47 +121,32 @@ def reject_based_on_ratio_confidence(logits, target):
     return sorted_logits, sorted_indices, sorted_targets
 
 def reject_based_on_montecarlo_dropout(model, classifier, dataloader, device, amp, data, N=10):
-    all_pred = []
+    all_logits = []
     model.train()
     for resblock in model.visual.transformer.resblocks:
         resblock.attn.dropout = 0.1
     target = None
     for i in range(N):
          logits, target = run_classification(model, classifier, dataloader, device, amp=amp)
-         pred = logits.argmax(axis=1)
-         all_pred.append(pred)
+         all_logits.append(logits.cpu().numpy())
 
-    index_freq = {}
+    all_logits = np.array(all_logits)
+    # Calculate averaged prediction
+    mean_prediction = np.mean(all_logits, axis=0)
+    # Calculate averaged prediction
+    predicted_class = np.argmax(mean_prediction, axis=1)
+    # Calculate variance of predicted class
+    predicted_class_variance = torch.tensor([np.var(all_logits[:,i,predicted_class[i]]) for i in range(predicted_class.shape[0])])
 
-    for tensor in all_pred:
-        for index, value in enumerate(tensor):
-            if index not in index_freq:
-                index_freq[index] = {}
-                index_freq[index][value.item()] = 1
-            else:
-                if value.item() not in index_freq[index]:
-    
-                    index_freq[index][value.item()] = 1
-                else:
-                    index_freq[index][value.item()] = index_freq[index][value.item()] + 1
 
-    pred = []
-    logits_obtained = []
-    for index in index_freq:
-
-        max_element = max(index_freq[index], key=index_freq[index].get)
-        pred.append(max_element)
-        logits_obtained.append(index_freq[index][max_element] / N)
-
-    # Append logits, indices, and targets to lists
-    logits_obtained = torch.as_tensor(np.asarray(logits_obtained))
-    pred = torch.as_tensor(np.asarray(pred))
-    sorted_logits, indices_sort = torch.sort(logits_obtained, descending=False, stable=True)
-    sorted_indices = pred[indices_sort]
+    # Sort logits in descending order and get the corresponding indice
+    sorted_logits, indices_sort = torch.sort(predicted_class_variance, descending=True, stable=True)
+    sorted_preds   = torch.tensor(predicted_class[indices_sort])
     sorted_targets = target[indices_sort]
 
+
     rejection_percentages = np.arange(0. , 1., 0.05)
-    non_rejected_accuracies, classification_qualities, rejection_qualities = compute_accuracy(sorted_logits, pred, sorted_targets, rejection_percentages)
+    non_rejected_accuracies, classification_qualities, rejection_qualities = compute_accuracy(sorted_logits, sorted_preds, sorted_targets, rejection_percentages)
     data['montecarlo_dropout'] = {}
     data['montecarlo_dropout']['non-rejected-accuracy'] = non_rejected_accuracies
     data['montecarlo_dropout']['classification-quality'] = classification_qualities
