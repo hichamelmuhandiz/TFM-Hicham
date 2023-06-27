@@ -120,7 +120,7 @@ def main_eval(base):
         print(f"Models: {models}")
         print(f"Datasets: {datasets}")
         print(f"Languages: {languages}")
-
+    rejection_data_to_save = {}
     for model, pretrained in models:
         for dataset in datasets:
             for language in languages:
@@ -224,7 +224,7 @@ def run(args):
             print(f"Zero-shot templates: {zeroshot_templates}")
         classnames = dataset.classes if hasattr(dataset, "classes") else None
         assert (zeroshot_templates is not None and classnames is not None), "Dataset does not support classification"
-        metrics = zeroshot_classification.evaluate(
+        metrics, rejection_data = zeroshot_classification.evaluate(
             model, 
             dataloader, 
             tokenizer, 
@@ -236,6 +236,10 @@ def run(args):
             save_clf=args.save_clf,
             load_clfs=args.load_clfs,
         )
+
+        rejection_data_to_save = {}
+        rejection_data_to_save['model'] = args.model
+        rejection_data_to_save['results'] = rejection_data
     elif task == "zeroshot_retrieval":
         metrics = zeroshot_retrieval.evaluate(
             model, 
@@ -297,10 +301,26 @@ def run(args):
         "metrics": metrics,
         "language": args.language,
     }
+
     if args.verbose:
         print(f"Dump results to: {output}")
     with open(output, "w") as f:
         json.dump(dump, f)
+
+    rejection_output = 'rejection.json'
+    if os.path.exists(rejection_output):
+        with open('rejection.json', 'r+') as f:
+            data = json.load(f)
+            data[dataset_slug] = rejection_data_to_save
+            f.seek(0)        # <--- should reset file position to the beginning.
+            json.dump(data, f, indent=4)
+            f.truncate()     # remove remaining part
+    else:
+        with open(rejection_output, "w") as f:
+            data = {}
+            data[dataset_slug] = rejection_data_to_save
+            json.dump(data, f)
+    
     return 0
 
 

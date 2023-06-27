@@ -8,6 +8,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
+from collections import Counter
+from . import rejection_methods as RM
 
 from sklearn.metrics import classification_report, balanced_accuracy_score
 
@@ -76,48 +78,6 @@ def accuracy(output, target, topk=(1,)):
     correct = pred.eq(target.view(1, -1).expand_as(pred))
     n = len(target)
     return [float(correct[:k].reshape(-1).float().sum(0, keepdim=True).cpu().numpy()) / n for k in topk]
-
-
-def run_classification(model, classifier, dataloader, device, amp=True):
-    """
-    Run zero-shot classifcation
-
-    model: torch.nn.Module
-        CLIP-like model with `encode_image` and `encode_text`
-    
-    classifier: torch.Tensor
-        obtained from the function `zero_shot_classifier`
-    
-    dataloader: torch.utils.data.Dataloader 
-    
-    Returns
-    -------
-    (pred, true)  where
-        - pred (N, C) are the logits
-        - true (N,) are the actual classes
-    """
-    autocast = torch.cuda.amp.autocast if amp else suppress
-    pred = []
-    true = []
-    nb = 0
-    with torch.no_grad():
-        for images, target in tqdm(dataloader):
-            images = images.to(device)
-            target = target.to(device)
-
-            with autocast():
-                # predict
-                image_features = model.encode_image(images)
-                image_features = F.normalize(image_features, dim=-1)
-                logits = 100. * image_features @ classifier
-            
-            true.append(target.cpu())
-            pred.append(logits.float().cpu())
-
-    pred = torch.cat(pred)
-    true = torch.cat(true)
-    return pred, true
-
 
 
 def average_precision_per_class(scores, targets):
@@ -204,7 +164,7 @@ def evaluate(model, dataloader, tokenizer, classnames, templates, device, amp=Tr
     if save_clf is not None:
         torch.save(classifier, save_clf)
         # exit() - not sure if we want to exit here or not.
-    logits, target = run_classification(model, classifier, dataloader, device, amp=amp)
+    logits, target = RM.run_classification(model, classifier, dataloader, device, amp=amp)
     is_multilabel = (len(target.shape) == 2)
 
     if is_multilabel:
@@ -232,155 +192,35 @@ def evaluate(model, dataloader, tokenizer, classnames, templates, device, amp=Tr
             print(classification_report(target, pred, digits=3))
 
         # TODO: add different rejection strategies here
+        data = {}
+        data['acc1'] = acc1
+        data['acc5'] = acc5
+        data['mean_per_class_recall'] = mean_per_class_recall
 
-        compute_rejection(logits, target)
-        reject_based_on_montecarlo_dropout(model, classifier, dataloader, device, amp=True)
-        return {"acc1": acc1, "acc5": acc5, "mean_per_class_recall": mean_per_class_recall}
+        data = compute_rejection(logits, target, data)
+        data = RM.reject_based_on_montecarlo_dropout(model, classifier, dataloader, device, True, data)
+        return {"acc1": acc1, "acc5": acc5, "mean_per_class_recall": mean_per_class_recall}, data
 
 
-def compute_rejection(logits, target):
+def compute_rejection(logits, target, data):
 
-    methods = [reject_based_on_softmax_response, reject_based_on_least_confidence, reject_based_on_predictive_entropy, reject_based_on_margin_confidence, reject_based_on_ratio_confidence]
-
+    methods = [RM.reject_based_on_softmax_response, RM.reject_based_on_least_confidence, RM.reject_based_on_predictive_entropy, RM.reject_based_on_margin_confidence, RM.reject_based_on_ratio_confidence]
+    print(len(methods))
     for method in methods:
          # Call the process_function to get sorted 
         sorted_logits, pred, sorted_targets = method(logits, target)
         rejection_percentages = np.arange(0. , 1., 0.05)
-        accuracies  = compute_accuracy(sorted_logits, pred, sorted_targets, rejection_percentages)
+        non_rejected_accuracies, classification_qualities, rejection_qualities = RM.compute_accuracy(sorted_logits, pred, sorted_targets, rejection_percentages)
         print("Method:", method.__name__)
-        print(accuracies)
+        print("Non rejected accuracy", non_rejected_accuracies)
+        print("Classification quality", classification_qualities)
+        print("Rejection quality",rejection_qualities)
+        data[method.__name__] = {}
+        data[method.__name__]['non-rejected-accuracy'] = non_rejected_accuracies
+        data[method.__name__]['classification-quality'] = classification_qualities
+        data[method.__name__]['rejection-quality'] = rejection_qualities
 
-
-def compute_accuracy(sorted_logits, pred, sorted_targets, rejection_percentages):
-    accuracies = []
-
-    for percentage_rejection in rejection_percentages:
-        # Calculate the number of elements to reject
-        num_reject = int(len(sorted_logits) * percentage_rejection)
-        # Discard the first 'num_reject' elements
-        filtered_logits = sorted_logits[num_reject:]
-        filtered_pred = pred[num_reject:]
-        filtered_targets = sorted_targets[num_reject:]
-        # Compute accuracy between filtered indices and targets
-        correct = (filtered_pred == filtered_targets).sum().item()
-        total = len(filtered_pred)
-        accuracy = correct / total * 100.0
-
-        accuracies.append(accuracy)
-
-    return accuracies
-
-
-def reject_based_on_softmax_response(logits, target):
-
-    # Sort logits in descending order and get the corresponding indice
-    max_logits, max_indices = torch.max(logits, dim=1)
-
-    sorted_logits, indices_sort = torch.sort(max_logits, descending=False)
-    sorted_indices = max_indices[indices_sort]
-    sorted_targets = target[indices_sort]
-
-    return sorted_logits, sorted_indices, sorted_targets
-
-def reject_based_on_least_confidence(logits, target):
-
-    max_logits, max_indices = torch.max(logits, dim=1)
-    max_logits = 100 - max_logits
-    # Append logits, indices, and targets to lists
-    sorted_logits, indices_sort = torch.sort(max_logits, descending=True)
-    sorted_indices = max_indices[indices_sort]
-    sorted_targets = target[indices_sort]
-
-    return sorted_logits, sorted_indices, sorted_targets
-
-def reject_based_on_predictive_entropy(logits, target):
-    ## REVISAR
-    values, indices = torch.max(logits, dim=1)
-    # Calculate the logarithm of values
-    log_values = torch.log2(logits)
-
-    num_classes = len(logits[0].size())
-    entropy = -torch.sum(logits * log_values,  dim=1) / torch.log2(torch.tensor(num_classes, dtype=torch.float32))
-
-    # Append logits, indices, and targets to lists
-    sorted_logits, indices_sort = torch.sort(entropy, descending=False)
-    sorted_indices = indices[indices_sort]
-    sorted_targets = target[indices_sort]
-
-    return sorted_logits, sorted_indices, sorted_targets
-
-def reject_based_on_margin_confidence(logits, target):
-    
-    # Calculate the top two values and indices for each sample in the batch
-    top_values, top_indices = torch.topk(logits, k=2, dim=1)
-
-    # Calculate the difference between the top two values for each sample in the batch
-    difference = top_values[:, 0] - top_values[:, 1]
-
-    # Retrieve the index of the top value
-    top_index = top_indices[:, 0]
-
-    # Append logits, indices, and targets to lists
-    sorted_logits, indices_sort = torch.sort(difference, descending=False)
-    sorted_indices = top_index[indices_sort]
-    sorted_targets = target[indices_sort]
-
-    return sorted_logits, sorted_indices, sorted_targets
-
-
-
-def reject_based_on_ratio_confidence(logits, target):
-
-    # Calculate the top two values and indices for each sample in the batch
-    top_values, top_indices = torch.topk(logits, k=2, dim=1)
-
-    # Calculate the difference between the top two values for each sample in the batch
-    ratio = top_values[:, 0] / top_values[:, 1]
-
-    # Retrieve the index of the top value
-    top_index = top_indices[:, 0]
-
-    # Append logits, indices, and targets to lists
-    sorted_logits, indices_sort = torch.sort(ratio, descending=False)
-    sorted_indices = top_index[indices_sort]
-    sorted_targets = target[indices_sort]
-
-    return sorted_logits, sorted_indices, sorted_targets
-
-def reject_based_on_montecarlo_dropout(model, classifier, dataloader, device, amp, N=3):
-    all_pred = []
-    model.train()
-    for resblock in model.visual.transformer.resblocks:
-        resblock.attn.dropout = 0.1
-    
-    for i in range(N):
-         logits, target = run_classification(model, classifier, dataloader, device, amp=amp)
-         pred = logits.argmax(axis=1)
-         all_pred.append(pred)
-
-    index_freq = {}
-    print(tensor)
-    for tensor in all_pred:
-         for index, value in enumerate(tensor):
-            if index not in index_freq:
-                index_freq[index] = {value: 1}
-            else:
-                if value not in index_freq[index]:
-                    index_freq[index][value] = 1
-                else:
-                    index_freq[index][value] += 1
-
-    # Step 2: Find the element with the highest frequency at each index
-    max_frequent_elements_list = [max(freq, key=freq.get) for index, freq in index_freq.items()]
-    max_frequent_elements = torch.tensor(max_frequent_elements_list)
-    print(max_frequent_elements)
-    # Step 3: Compute the frequency ratio of the maximum frequent element
-    num_tensors = len(all_pred)
-    ratio_max_frequent_elements_list = [max(freq, key=freq.get) for index, freq in index_freq.items()]
-    max_frequent_values_list = [max(freq.values()) for freq in index_freq.values()]
-
-    frequency_ratios = torch.tensor([freq[max_frequent_elements_list[index]] / num_tensors for index, freq in index_freq.items()])
-    print(frequency_ratios)
+    return data
 
 
 
