@@ -1,1 +1,0 @@
-{"dataset": "wds/vtab/caltech101", "model": "ViT-B-32", "pretrained": "openai", "task": "zeroshot_classification", "metrics": {"acc1": 0.8161051766639277, "acc5": 0.9469186524239934, "mean_per_class_recall": 0.8761007486398088}, "language": "en"}

@@ -121,7 +121,7 @@ def average_precision_per_class(scores, targets):
     return ap
 
 
-def evaluate(model, dataloader, tokenizer, classnames, templates, device, amp=True, verbose=False, cupl=False, save_clf=None, load_clfs=[]):
+def evaluate(model, dataloader, tokenizer, classnames, templates, device, amp=True, verbose=False, cupl=False, save_clf=None, load_clfs=[], args=None):
     """
     Run zero-shot classification and evaluate the metrics
 
@@ -159,7 +159,7 @@ def evaluate(model, dataloader, tokenizer, classnames, templates, device, amp=Tr
             classifier = classifier + torch.load(load_clfs[i], map_location='cpu') / n
         classifier = classifier.to(device)
     else:
-        classifier = zero_shot_classifier(model, tokenizer, classnames, templates, device, cupl=cupl)
+        classifier = zero_shot_classifier(model, tokenizer, classnames, templates, device, )
     
     if save_clf is not None:
         torch.save(classifier, save_clf)
@@ -198,7 +198,8 @@ def evaluate(model, dataloader, tokenizer, classnames, templates, device, amp=Tr
         data['mean_per_class_recall'] = mean_per_class_recall
 
         data = compute_rejection(logits, target, data)
-        data = RM.reject_based_on_montecarlo_dropout(model, classifier, dataloader, device, True, data)
+        #data = RM.reject_based_on_montecarlo_dropout(model, classifier, dataloader, device, True, data)
+        data = RM.reject_based_on_montecarlo_patch_dropout(args, classifier, dataloader, device, True, data)
         return {"acc1": acc1, "acc5": acc5, "mean_per_class_recall": mean_per_class_recall}, data
 
 

@@ -235,6 +235,7 @@ def run(args):
             cupl=args.cupl,
             save_clf=args.save_clf,
             load_clfs=args.load_clfs,
+            args=args
         )
 
         rejection_data_to_save = {}
