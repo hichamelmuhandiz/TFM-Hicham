@@ -12,6 +12,7 @@ You can visualize the results in the [notebook](results.ipynb)
 clip_benchmark eval --pretrained_model openai openclip_base \
     --dataset "webdatasets.txt" \
     --dataset_root "https://huggingface.co/datasets/clip-benchmark/wds_{dataset_cleaned}/tree/main" \
+    --task "zeroshot_classification" \
     --output "benchmark_{dataset}_{pretrained}_{model}_{language}_{task}.json"
 ```
 

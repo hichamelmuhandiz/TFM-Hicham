@@ -56,3 +56,7 @@ probe_benchmark/data
 datasets
 downloads
 .env
+
+benchmark*.json
+webdatasets.txt
+rejection.json

@@ -238,9 +238,10 @@ def run(args):
             args=args
         )
 
-        rejection_data_to_save = {}
-        rejection_data_to_save['model'] = args.model
-        rejection_data_to_save['results'] = rejection_data
+        if len(rejection_data) != 0:
+            rejection_data_to_save = {}
+            rejection_data_to_save['model'] = args.model
+            rejection_data_to_save['results'] = rejection_data
     elif task == "zeroshot_retrieval":
         metrics = zeroshot_retrieval.evaluate(
             model, 
@@ -308,20 +309,21 @@ def run(args):
     with open(output, "w") as f:
         json.dump(dump, f)
 
-    rejection_output = 'rejection.json'
-    if os.path.exists(rejection_output):
-        with open('rejection.json', 'r+') as f:
-            data = json.load(f)
-            data[dataset_slug] = rejection_data_to_save
-            f.seek(0)        # <--- should reset file position to the beginning.
-            json.dump(data, f, indent=4)
-            f.truncate()     # remove remaining part
-    else:
-        with open(rejection_output, "w") as f:
-            data = {}
-            data[dataset_slug] = rejection_data_to_save
-            json.dump(data, f)
-    
+    if args.task == "zeroshot_classification":
+        rejection_output = 'rejection.json'
+        if os.path.exists(rejection_output):
+            with open('rejection.json', 'r+') as f:
+                data = json.load(f)
+                data[dataset_slug] = rejection_data_to_save
+                f.seek(0)        # <--- should reset file position to the beginning.
+                json.dump(data, f, indent=4)
+                f.truncate()     # remove remaining part
+        else:
+            with open(rejection_output, "w") as f:
+                data = {}
+                data[dataset_slug] = rejection_data_to_save
+                json.dump(data, f)
+        
     return 0
 
 

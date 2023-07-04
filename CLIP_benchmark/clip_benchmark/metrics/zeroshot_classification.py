@@ -175,7 +175,7 @@ def evaluate(model, dataloader, tokenizer, classnames, templates, device, amp=Tr
         if verbose:
             for class_name, ap in zip(dataloader.dataset.classes, ap_per_class.tolist()):
                 print(f"Class: {class_name}, AveragePrecision: {ap}")
-        return {"mean_average_precision": ap_per_class.mean().item()}
+        return {"mean_average_precision": ap_per_class.mean().item()}, {}
     else:
         # Single label per image, multiple classes on the dataset
         # just compute accuracy and mean_per_class_recall
@@ -198,8 +198,9 @@ def evaluate(model, dataloader, tokenizer, classnames, templates, device, amp=Tr
         data['mean_per_class_recall'] = mean_per_class_recall
 
         data = compute_rejection(logits, target, data)
-        #data = RM.reject_based_on_montecarlo_dropout(model, classifier, dataloader, device, True, data)
+        data = RM.reject_based_on_montecarlo_dropout(model, classifier, dataloader, device, True, data)
         data = RM.reject_based_on_montecarlo_patch_dropout(args, classifier, dataloader, device, True, data)
+        #data = RM.compute_ensembles(args, data)
         return {"acc1": acc1, "acc5": acc5, "mean_per_class_recall": mean_per_class_recall}, data
 
 
@@ -212,10 +213,10 @@ def compute_rejection(logits, target, data):
         sorted_logits, pred, sorted_targets = method(logits, target)
         rejection_percentages = np.arange(0. , 1., 0.05)
         non_rejected_accuracies, classification_qualities, rejection_qualities = RM.compute_accuracy(sorted_logits, pred, sorted_targets, rejection_percentages)
-        print("Method:", method.__name__)
-        print("Non rejected accuracy", non_rejected_accuracies)
-        print("Classification quality", classification_qualities)
-        print("Rejection quality",rejection_qualities)
+        # print("Method:", method.__name__)
+        # print("Non rejected accuracy", non_rejected_accuracies)
+        # print("Classification quality", classification_qualities)
+        # print("Rejection quality",rejection_qualities)
         data[method.__name__] = {}
         data[method.__name__]['non-rejected-accuracy'] = non_rejected_accuracies
         data[method.__name__]['classification-quality'] = classification_qualities

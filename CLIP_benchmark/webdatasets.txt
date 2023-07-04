@@ -1,1 +1,0 @@
-wds/vtab/cifar10

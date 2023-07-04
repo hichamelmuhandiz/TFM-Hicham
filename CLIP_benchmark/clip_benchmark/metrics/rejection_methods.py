@@ -4,6 +4,9 @@ import numpy as np
 from tqdm import tqdm
 import torch.nn.functional as F
 from clip_benchmark.models import load_clip, MODEL_TYPES
+import open_clip
+from clip_benchmark.datasets.builder import build_dataset, get_dataset_collate_fn, get_dataset_default_task, dataset_collection, get_dataset_collection_from_file
+import math
 
 def run_classification(model, classifier, dataloader, device, amp=True):
     """
@@ -36,7 +39,7 @@ def run_classification(model, classifier, dataloader, device, amp=True):
                 # predict
                 image_features = model.encode_image(images)
                 image_features = F.normalize(image_features, dim=-1)
-                logits = 100. * image_features @ classifier
+                logits = (100. * image_features @ classifier).softmax(dim=-1)
             
             true.append(target.cpu())
             pred.append(logits.float().cpu())
@@ -108,16 +111,14 @@ def reject_based_on_least_confidence(logits, target):
     return sorted_logits, sorted_indices, sorted_targets
 
 def reject_based_on_predictive_entropy(logits, target):
-    ## REVISAR
     values, indices = torch.max(logits, dim=1)
     # Calculate the logarithm of values
     log_values = torch.log2(logits)
-
-    num_classes = len(logits[0].size())
+    num_classes = list(logits[0].size())[0]
     entropy = -torch.sum(logits * log_values,  dim=1) / torch.log2(torch.tensor(num_classes, dtype=torch.float32))
 
     # Append logits, indices, and targets to lists
-    sorted_logits, indices_sort = torch.sort(entropy, descending=False, stable=True)
+    sorted_logits, indices_sort = torch.sort(entropy, descending=True, stable=True)
     sorted_indices = indices[indices_sort]
     sorted_targets = target[indices_sort]
 
@@ -179,13 +180,13 @@ def reject_based_on_montecarlo_dropout(model, classifier, dataloader, device, am
     # # Calculate variance of predicted class
     # predicted_class_variance = torch.tensor([np.var(all_logits[:,i,predicted_class[i]]) for i in range(predicted_class.shape[0])])
 
-
     # # Sort logits in descending order and get the corresponding indice
     # sorted_logits, indices_sort = torch.sort(predicted_class_variance, descending=True, stable=True)
-    # sorted_preds   = torch.tensor(predicted_class[indices_sort])
+
+    # sorted_preds  = torch.tensor(predicted_class[indices_sort])
     # sorted_targets = target[indices_sort]
 
-    sorted_Logits, sorted_preds, sorted_targets = calculate_variance_and_sort_logits_montecarlo(all_logits, target)
+    sorted_logits, sorted_preds, sorted_targets = calculate_variance_and_sort_logits_montecarlo(all_logits, target)
 
     rejection_percentages = np.arange(0. , 1., 0.05)
     non_rejected_accuracies, classification_qualities, rejection_qualities = compute_accuracy(sorted_logits, sorted_preds, sorted_targets, rejection_percentages)
@@ -198,7 +199,7 @@ def reject_based_on_montecarlo_dropout(model, classifier, dataloader, device, am
    
     
 
-def reject_based_on_montecarlo_patch_dropout(args, classifier, dataloader, device, amp, data, N=3):
+def reject_based_on_montecarlo_patch_dropout(args, classifier, dataloader, device, amp, data, N=10):
     model, transform, tokenizer = load_clip(
             model_type=args.model_type,
             model_name=args.model,
@@ -303,5 +304,135 @@ def compute_accuracy(sorted_logits, pred, sorted_targets, rejection_percentages)
 
     return non_rejected_accuracies, classification_qualities, rejection_qualities
 
-def compute_ensembles():
-    pass
+def compute_ensembles(args, data):
+    all_logits = []
+
+    model_collection = {
+        "openclip_base": [
+            ("ViT-B-32-quickgelu", "laion400m_e32"),
+            ("ViT-B-32","laion2b_e16"),
+            ("ViT-B-32","laion2b_s34b_b79k"),
+            ("ViT-B-16","laion400m_e32"),
+            ("ViT-B-16-plus-240","laion400m_e32"),
+            ("ViT-L-14","laion400m_e32"),
+            # ("ViT-L-14","laion2b_s32b_b82k"),
+            # ("ViT-H-14","laion2b_s32b_b79k"),
+            # ("ViT-g-14","laion2b_s12b_b42k"),
+            ],
+        "openclip_multilingual":[
+                ("xlm-roberta-base-ViT-B-32", "laion5b_s13b_b90k"),
+                ("xlm-roberta-large-ViT-H-14", "frozen_laion5b_s13b_b90k"),
+            ],
+        "openclip_all": open_clip.list_pretrained(),
+        "openai": [
+            ("ViT-B-32","openai"),
+            ("ViT-B-16","openai"),
+            ("ViT-L-14", "openai"),
+            ("ViT-L-14-336", "openai"),
+        ]
+    }
+
+    models = []
+    models.extend(model_collection['openclip_base'])
+
+    #setup dataset and task variables
+
+    device = args.device
+
+    task = args.task
+    if args.dataset.startswith("wds/"):
+        dataset_name = args.dataset.replace("wds/", "", 1)
+    else:
+        dataset_name = args.dataset
+    if task == "auto":
+        task = get_dataset_default_task(dataset_name)
+
+    #for each model run classification task
+    for model, pretrained in models:
+        model, transform, tokenizer = load_clip(
+                model_type=args.model_type,
+                model_name=model,
+                pretrained=pretrained,
+                cache_dir=args.model_cache_dir,
+                device=args.device
+            )
+        model.eval()
+
+        print(transform)
+        dataset_root = args.dataset_root.format(dataset=dataset_name, dataset_cleaned=dataset_name.replace("/", "-"))
+        
+
+        dataset = build_dataset(
+            dataset_name=args.dataset, 
+            root=dataset_root, 
+            transform=transform, 
+            split=args.split, 
+            annotation_file=args.annotation_file,
+            download=True,
+            language=args.language,
+            task=task,
+            cupl=args.cupl,
+            wds_cache_dir=args.wds_cache_dir,
+        )
+
+        classnames = dataset.classes if hasattr(dataset, "classes") else None
+        zeroshot_templates = dataset.templates if hasattr(dataset, "templates") else None
+        assert (zeroshot_templates is not None and classnames is not None), "Dataset does not support classification"
+        if args.cupl:
+            assert (zeroshot_templates is not None), "Dataset does not support CuPL prompts"        
+        if args.verbose:
+            print(f"Zero-shot templates: {zeroshot_templates}")
+
+        
+        collate_fn = get_dataset_collate_fn(args.dataset)
+        if args.verbose:
+            try:
+                print(f"Dataset size: {len(dataset)}")
+            except TypeError:
+                print("IterableDataset has no len()")
+            print(f"Dataset split: {args.split}")
+            if dataset.classes:
+                try:
+                    print(f"Dataset classes: {dataset.classes}")
+                    print(f"Dataset number of classes: {len(dataset.classes)}")
+                except AttributeError:
+                    print("Dataset has no classes.")
+
+        if args.dataset.startswith("wds/"):
+            dataloader = torch.utils.data.DataLoader(
+                dataset.batched(args.batch_size), batch_size=None, 
+                shuffle=False, num_workers=args.num_workers,
+            )
+        else:
+            dataloader = torch.utils.data.DataLoader(
+                dataset, batch_size=args.batch_size, 
+                shuffle=False, num_workers=args.num_workers, 
+                collate_fn=collate_fn
+            )
+
+        load_clfs = args.load_clfs
+        if len(load_clfs) > 0:
+            n = len(load_clfs)
+            classifier = torch.load(load_clfs[0], map_location='cpu') / n
+            for i in range(1, n):
+                classifier = classifier + torch.load(load_clfs[i], map_location='cpu') / n
+            classifier = classifier.to(device)
+        else:
+            classifier = zero_shot_classifier(model, tokenizer, classnames, zeroshot_templates, device, )
+        
+
+        logits, target = run_classification(model, classifier, dataloader, device, amp=True)
+        all_logits.append(logits.cpu().numpy())
+
+
+    sorted_logits, sorted_preds, sorted_targets = calculate_variance_and_sort_logits_montecarlo(all_logits, target)
+
+    rejection_percentages = np.arange(0. , 1., 0.05)
+    non_rejected_accuracies, classification_qualities, rejection_qualities = compute_accuracy(sorted_logits, sorted_preds, sorted_targets, rejection_percentages)
+
+    data['ensembles'] = {}
+    data['ensembles']['non-rejected-accuracy'] = non_rejected_accuracies
+    data['ensembles']['classification-quality'] = classification_qualities
+    data['ensembles']['rejection-quality'] = rejection_qualities
+
+    return data
