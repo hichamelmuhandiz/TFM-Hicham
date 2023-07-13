@@ -222,7 +222,7 @@ def evaluate(model, train_dataloader, dataloader, fewshot_k, batch_size, num_wor
 
             with autocast():
                 # predict
-                logits = probe(x)
+                logits = probe(x).softmax(dim=-1)
 
             pred.append(logits.float().cpu())
             true.append(y.cpu())
