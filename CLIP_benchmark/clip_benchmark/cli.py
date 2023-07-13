@@ -223,6 +223,10 @@ def run(args):
         if args.verbose:
             print(f"Zero-shot templates: {zeroshot_templates}")
         classnames = dataset.classes if hasattr(dataset, "classes") else None
+
+        if zeroshot_templates == None or classnames == None:
+            return 0
+            
         assert (zeroshot_templates is not None and classnames is not None), "Dataset does not support classification"
         metrics, rejection_data = zeroshot_classification.evaluate(
             model, 
