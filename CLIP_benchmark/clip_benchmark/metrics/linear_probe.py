@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, Sampler
 import numpy as np
 from .zeroshot_classification import accuracy
-
+from . import rejection_methods as RM
 from sklearn.metrics import classification_report, balanced_accuracy_score
 
 def assign_learning_rate(param_group, new_lr):
@@ -224,7 +224,7 @@ def evaluate(model, train_dataloader, dataloader, fewshot_k, batch_size, num_wor
                 # predict
                 logits = probe(x)
 
-            pred.append(logits.cpu())
+            pred.append(logits.float().cpu())
             true.append(y.cpu())
             
     logits = torch.cat(pred)
@@ -242,7 +242,34 @@ def evaluate(model, train_dataloader, dataloader, fewshot_k, batch_size, num_wor
         print(classification_report(target, pred, digits=3))
 
     print('acc1:', acc1)
+
+    data = {}
+    data['acc1'] = acc1
+    data['mean_per_class_recall'] = mean_per_class_recall
+    data = compute_rejection(logits, target, data)
+
     return {"lp_acc1": acc1, "lp_acc5": acc5, "lp_mean_per_class_recall": mean_per_class_recall, 
-            'lr': lr, 'epochs': epochs, 'seed': seed, 'fewshot_k': fewshot_k}
+            'lr': lr, 'epochs': epochs, 'seed': seed, 'fewshot_k': fewshot_k}, data
 
     
+def compute_rejection(logits, target, data):
+
+    methods = [RM.reject_based_on_softmax_response, RM.reject_based_on_least_confidence, RM.reject_based_on_predictive_entropy, RM.reject_based_on_margin_confidence, RM.reject_based_on_ratio_confidence]
+    print(len(methods))
+    for method in methods:
+        # Call the process_function to get sorted 
+        sorted_logits, pred, sorted_targets = method(logits, target)
+        rejection_percentages = np.arange(0. , 1., 0.05)
+        non_rejected_accuracies, classification_qualities, rejection_qualities = RM.compute_accuracy(sorted_logits, pred, sorted_targets, rejection_percentages)
+        # print("Method:", method.__name__)
+        # print("Non rejected accuracy", non_rejected_accuracies)
+        # print("Classification quality", classification_qualities)
+        # print("Rejection quality",rejection_qualities)
+        data[method.__name__] = {}
+        data[method.__name__]['non-rejected-accuracy'] = non_rejected_accuracies
+        data[method.__name__]['classification-quality'] = classification_qualities
+        data[method.__name__]['rejection-quality'] = rejection_qualities
+
+    return data
+
+

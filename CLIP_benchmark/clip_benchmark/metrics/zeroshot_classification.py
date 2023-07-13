@@ -207,7 +207,6 @@ def evaluate(model, dataloader, tokenizer, classnames, templates, device, amp=Tr
 def compute_rejection(logits, target, data):
 
     methods = [RM.reject_based_on_softmax_response, RM.reject_based_on_least_confidence, RM.reject_based_on_predictive_entropy, RM.reject_based_on_margin_confidence, RM.reject_based_on_ratio_confidence]
-    print(len(methods))
     for method in methods:
          # Call the process_function to get sorted 
         sorted_logits, pred, sorted_targets = method(logits, target)

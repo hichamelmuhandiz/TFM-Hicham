@@ -226,7 +226,7 @@ def run(args):
 
         if zeroshot_templates == None or classnames == None:
             return 0
-            
+
         assert (zeroshot_templates is not None and classnames is not None), "Dataset does not support classification"
         metrics, rejection_data = zeroshot_classification.evaluate(
             model, 
@@ -270,7 +270,7 @@ def run(args):
             shuffle=False, num_workers=args.num_workers, 
             collate_fn=collate_fn, pin_memory=True,
         )
-        metrics = linear_probe.evaluate(
+        metrics, linear_probe_data = linear_probe.evaluate(
             model,
             train_dataloader, 
             dataloader, 
@@ -286,6 +286,13 @@ def run(args):
             amp=args.amp,
             verbose=args.verbose,
         )
+
+        if len(linear_probe_data) != 0:
+            linear_probe_data_to_save = {}
+            linear_probe_data_to_save['model'] = args.model
+            linear_probe_data_to_save['results'] = linear_probe_data
+
+
     elif task == "mscoco_generative":
         metrics = mscoco_generative.evaluate(
             model=model, 
@@ -315,21 +322,26 @@ def run(args):
 
     if args.task == "zeroshot_classification":
         rejection_output = 'rejection.json'
-        if os.path.exists(rejection_output):
-            with open('rejection.json', 'r+') as f:
-                data = json.load(f)
-                data[dataset_slug] = rejection_data_to_save
-                f.seek(0)        # <--- should reset file position to the beginning.
-                json.dump(data, f, indent=4)
-                f.truncate()     # remove remaining part
-        else:
-            with open(rejection_output, "w") as f:
-                data = {}
-                data[dataset_slug] = rejection_data_to_save
-                json.dump(data, f)
+        write_json(rejection_output, dataset_slug, rejection_data_to_save)
+    elif args.task == "linear_probe":
+        linear_probe_output = 'linear_probe.json'
+        write_json(linear_probe_output, dataset_slug, linear_probe_data_to_save)
         
     return 0
 
+def write_json(file, dataset_slug, data_to_save):
+    if os.path.exists(file):
+        with open(file, 'r+') as f:
+            data = json.load(f)
+            data[dataset_slug] = data_to_save
+            f.seek(0)        # <--- should reset file position to the beginning.
+            json.dump(data, f, indent=4)
+            f.truncate()     # remove remaining part
+    else:
+        with open(file, "w") as f:
+            data = {}
+            data[dataset_slug] = data_to_save
+            json.dump(data, f)
 
 if __name__ == "__main__":
     sys.exit(main())  # pragma: no cover
