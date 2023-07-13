@@ -201,6 +201,7 @@ def evaluate(model, dataloader, tokenizer, classnames, templates, device, amp=Tr
         data = RM.reject_based_on_montecarlo_dropout(model, classifier, dataloader, device, True, data)
         data = RM.reject_based_on_montecarlo_patch_dropout(args, classifier, dataloader, device, True, data)
         data = RM.compute_ensembles(args, data)
+        data = RM.compute_prompt_embedding_space_ensembles(model, dataloader, tokenizer, classnames, templates, device, data)
         return {"acc1": acc1, "acc5": acc5, "mean_per_class_recall": mean_per_class_recall}, data
 
 

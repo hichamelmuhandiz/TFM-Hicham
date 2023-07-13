@@ -308,16 +308,14 @@ def compute_ensembles(args, data):
     all_logits = []
 
     model_collection = {
-        "openclip_base": [
-            ("ViT-B-32-quickgelu", "laion400m_e32"),
+        #NOMÉS S'UTILITZA AQUEST
+        "mix_dataset": [
+            ("ViT-B-32", "laion400m_e32"),
             ("ViT-B-32","laion2b_e16"),
-            ("ViT-B-32","laion2b_s34b_b79k"),
-            ("ViT-B-16","laion400m_e32"),
-            ("ViT-B-16-plus-240","laion400m_e32"),
-            ("ViT-L-14","laion400m_e32"),
-            ("ViT-L-14","laion2b_s32b_b82k"),
-            ("ViT-H-14","laion2b_s32b_b79k"),
-            ("ViT-g-14","laion2b_s12b_b42k"),
+            ("ViT-B-32","datacomp_m_s128m_b4k"),
+            ("ViT-B-32","commonpool_m_clip_s128m_b4k"),
+            ("ViT-B-32","datacomp_s_s13m_b4k"),
+            ("ViT-B-32","openai"),
             ],
         "openclip_multilingual":[
                 ("xlm-roberta-base-ViT-B-32", "laion5b_s13b_b90k"),
@@ -333,7 +331,7 @@ def compute_ensembles(args, data):
     }
 
     models = []
-    models.extend(model_collection['openclip_base'])
+    models.extend(model_collection['mix_dataset'])
 
     #setup dataset and task variables
 
@@ -358,7 +356,6 @@ def compute_ensembles(args, data):
             )
         model.eval()
 
-        print(transform)
         dataset_root = args.dataset_root.format(dataset=dataset_name, dataset_cleaned=dataset_name.replace("/", "-"))
         
 
@@ -434,5 +431,33 @@ def compute_ensembles(args, data):
     data['ensembles']['non-rejected-accuracy'] = non_rejected_accuracies
     data['ensembles']['classification-quality'] = classification_qualities
     data['ensembles']['rejection-quality'] = rejection_qualities
+
+    return data
+
+def compute_prompt_embedding_space_ensembles(model, dataloader, tokenizer, classnames, templates, device, data, load_clfs=[]):
+
+    all_logits = []
+    for template in templates:
+
+        if len(load_clfs) > 0:
+            n = len(load_clfs)
+            classifier = torch.load(load_clfs[0], map_location='cpu') / n
+            for i in range(1, n):
+                classifier = classifier + torch.load(load_clfs[i], map_location='cpu') / n
+            classifier = classifier.to(device)
+        else:
+            classifier = zero_shot_classifier(model, tokenizer, classnames, [template], device, )
+
+        logits, target = run_classification(model, classifier, dataloader, device, amp=True)
+        all_logits.append(logits.cpu().numpy())
+
+    sorted_logits, sorted_preds, sorted_targets = calculate_variance_and_sort_logits_montecarlo(all_logits, target)
+
+    rejection_percentages = np.arange(0. , 1., 0.05)
+    non_rejected_accuracies, classification_qualities, rejection_qualities = compute_accuracy(sorted_logits, sorted_preds, sorted_targets, rejection_percentages)  
+    data['prompt-embedding-space-ensembles'] = {}
+    data['prompt-embedding-space-ensembles']['non-rejected-accuracy'] = non_rejected_accuracies
+    data['prompt-embedding-space-ensembles']['classification-quality'] = classification_qualities
+    data['prompt-embedding-space-ensembles']['rejection-quality'] = rejection_qualities
 
     return data
