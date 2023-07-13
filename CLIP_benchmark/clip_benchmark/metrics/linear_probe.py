@@ -245,3 +245,4 @@ def evaluate(model, train_dataloader, dataloader, fewshot_k, batch_size, num_wor
     return {"lp_acc1": acc1, "lp_acc5": acc5, "lp_mean_per_class_recall": mean_per_class_recall, 
             'lr': lr, 'epochs': epochs, 'seed': seed, 'fewshot_k': fewshot_k}
 
+    
