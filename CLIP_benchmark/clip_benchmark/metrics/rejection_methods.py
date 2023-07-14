@@ -6,9 +6,11 @@ import torch.nn.functional as F
 from clip_benchmark.models import load_clip, MODEL_TYPES
 import open_clip
 from clip_benchmark.datasets.builder import build_dataset, get_dataset_collate_fn, get_dataset_default_task, dataset_collection, get_dataset_collection_from_file
+from clip_benchmark.metrics.temperature_scaling import ModelWithTemperature
 import math
+import os 
 
-def run_classification(model, classifier, dataloader, device, amp=True):
+def run_classification(model, classifier, dataloader, device, temperature_scaling=False, amp=True):
     """
     Run zero-shot classifcation
 
@@ -37,14 +39,18 @@ def run_classification(model, classifier, dataloader, device, amp=True):
 
             with autocast():
                 # predict
-                image_features = model.encode_image(images)
-                image_features = F.normalize(image_features, dim=-1)
-                logits = (100. * image_features @ classifier).softmax(dim=-1)
+                if temperature_scaling:
+                    logits = model.encode_image(images, classifier)
+                else:
+                    image_features = model.encode_image(images)
+                    image_features = F.normalize(image_features, dim=-1)
+                    logits = (100. * image_features @ classifier).softmax(dim=-1)
             
             true.append(target.cpu())
             pred.append(logits.float().cpu())
 
     pred = torch.cat(pred)
+
     true = torch.cat(true)
     return pred, true
 
@@ -72,6 +78,7 @@ def zero_shot_classifier(model, tokenizer, classnames, templates, device, amp=Tr
     torch.Tensor of shape (N,C) where N is the number
     of templates, and C is the number of classes.
     """
+    templates = ["a photo of a {c}."]
     autocast = torch.cuda.amp.autocast if amp else suppress
     with torch.no_grad(), autocast():
         zeroshot_weights = []
@@ -162,7 +169,7 @@ def reject_based_on_ratio_confidence(logits, target):
 
     return sorted_logits, sorted_indices, sorted_targets
 
-def reject_based_on_montecarlo_dropout(model, classifier, dataloader, device, amp, data, N=10):
+def reject_based_on_montecarlo_dropout(model, classifier, dataloader, device, amp, data, N=50):
     all_logits = []
     model.train()
     for resblock in model.visual.transformer.resblocks:
@@ -173,7 +180,7 @@ def reject_based_on_montecarlo_dropout(model, classifier, dataloader, device, am
          all_logits.append(logits.cpu().numpy())
     
     mean_prediction = np.mean(all_logits, axis=0)
-    data = compute_rejection(mean_prediction, target, data, prefix='MCD-') 
+    data = compute_rejection(torch.from_numpy(mean_prediction), target, data, prefix='MCD-') 
 
     # all_logits = np.array(all_logits)
     # # Calculate averaged prediction
@@ -202,33 +209,39 @@ def reject_based_on_montecarlo_dropout(model, classifier, dataloader, device, am
    
     
 
-def reject_based_on_montecarlo_patch_dropout(args, classifier, dataloader, device, amp, data, N=10):
-    model, transform, tokenizer = load_clip(
-            model_type=args.model_type,
-            model_name=args.model,
-            pretrained=args.pretrained,
-            cache_dir=args.model_cache_dir,
-            device=args.device,
-            force_patch_dropout=0.5
-        )
+def reject_based_on_montecarlo_patch_dropout(args, classifier, dataloader, device, amp, data, N=50):
 
-    target = None
-    all_logits = []
-    for i in range(N):
-         logits, target = run_classification(model, classifier, dataloader, device, amp=amp)
-         all_logits.append(logits.cpu().numpy())
-    
-    mean_prediction = np.mean(all_logits, axis=0)
-    data = compute_rejection(mean_prediction, target, data, prefix='MCPatchDropout-') 
-  
-    sorted_logits, sorted_preds, sorted_targets = calculate_variance_and_sort_logits_montecarlo(all_logits, target)
+    patch_sizes = [0.1,0.25, 0.50]
+    MC_samples = [10, 20, 30]
+    for patch_size in patch_sizes:
+        for N_samples in MC_samples:
+            model, transform, tokenizer = load_clip(
+                    model_type=args.model_type,
+                    model_name=args.model,
+                    pretrained=args.pretrained,
+                    cache_dir=args.model_cache_dir,
+                    device=args.device,
+                    force_patch_dropout=0.5
+                )
 
-    rejection_percentages = np.arange(0. , 1., 0.05)
-    non_rejected_accuracies, classification_qualities, rejection_qualities = compute_accuracy(sorted_logits, sorted_preds, sorted_targets, rejection_percentages)
-    data['montecarlo_patch_dropout'] = {}
-    data['montecarlo_patch_dropout']['non-rejected-accuracy'] = non_rejected_accuracies
-    data['montecarlo_patch_dropout']['classification-quality'] = classification_qualities
-    data['montecarlo_patch_dropout']['rejection-quality'] = rejection_qualities
+            target = None
+            all_logits = []
+            for i in range(N_samples):
+                logits, target = run_classification(model, classifier, dataloader, device, amp=amp)
+                all_logits.append(logits.cpu().numpy())
+            
+            mean_prediction = np.mean(all_logits, axis=0)
+            prefix_add = 'MCPatchDropout-' + '-' + patch_size + '-' + N_samples
+            data = compute_rejection(torch.from_numpy(mean_prediction), target, data, prefix=prefix_add) 
+        
+            sorted_logits, sorted_preds, sorted_targets = calculate_variance_and_sort_logits_montecarlo(all_logits, target)
+
+            rejection_percentages = np.arange(0. , 1., 0.05)
+            non_rejected_accuracies, classification_qualities, rejection_qualities = compute_accuracy(sorted_logits, sorted_preds, sorted_targets, rejection_percentages)
+            data['montecarlo_patch_dropout' + '-' + str(patch_size) + '-' + str(N_samples)] = {}
+            data['montecarlo_patch_dropout' + '-' + str(patch_size) + '-' + str(N_samples)]['non-rejected-accuracy'] = non_rejected_accuracies
+            data['montecarlo_patch_dropout' + '-'  + str(patch_size) + '-' + str(N_samples)]['classification-quality'] = classification_qualities
+            data['montecarlo_patch_dropout' + '-' + str(patch_size) + '-' + str(N_samples)]['rejection-quality'] = rejection_qualities
 
     return data
 
@@ -237,7 +250,6 @@ def calculate_variance_and_sort_logits_montecarlo(all_logits, target):
     all_logits = np.array(all_logits)
     # Calculate averaged prediction
     mean_prediction = np.mean(all_logits, axis=0)
-    # Calculate averaged prediction
     predicted_class = np.argmax(mean_prediction, axis=1)
     # Calculate variance of predicted class
     predicted_class_variance = torch.tensor([np.var(all_logits[:,i,predicted_class[i]]) for i in range(predicted_class.shape[0])])
@@ -337,7 +349,7 @@ def compute_ensembles(args, data):
     }
 
     models = []
-    models.extend(model_collection['mix_dataset'])
+    models.extend(model_collection['openai'])
 
     #setup dataset and task variables
 
@@ -425,20 +437,22 @@ def compute_ensembles(args, data):
         
 
         logits, target = run_classification(model, classifier, dataloader, device, amp=True)
+        print(np.shape(logits))
         all_logits.append(logits.cpu().numpy())
 
     mean_prediction = np.mean(all_logits, axis=0)
-    data = compute_rejection(mean_prediction, target, data, prefix='DeepEnsemble-') 
+    data = compute_rejection(torch.from_numpy(mean_prediction), target, data, prefix='DeepEnsemble-') 
 
-    sorted_logits, sorted_preds, sorted_targets = calculate_variance_and_sort_logits_montecarlo(all_logits, target)
+    #sorted_logits, sorted_preds, sorted_targets = calculate_variance_and_sort_logits_montecarlo(mean_prediction, target)
 
-    rejection_percentages = np.arange(0. , 1., 0.05)
-    non_rejected_accuracies, classification_qualities, rejection_qualities = compute_accuracy(sorted_logits, sorted_preds, sorted_targets, rejection_percentages)
 
-    data['ensembles'] = {}
-    data['ensembles']['non-rejected-accuracy'] = non_rejected_accuracies
-    data['ensembles']['classification-quality'] = classification_qualities
-    data['ensembles']['rejection-quality'] = rejection_qualities
+    # rejection_percentages = np.arange(0. , 1., 0.05)
+    # non_rejected_accuracies, classification_qualities, rejection_qualities = compute_accuracy(sorted_logits, sorted_preds, sorted_targets, rejection_percentages)
+
+    # data['ensembles'] = {}
+    # data['ensembles']['non-rejected-accuracy'] = non_rejected_accuracies
+    # data['ensembles']['classification-quality'] = classification_qualities
+    # data['ensembles']['rejection-quality'] = rejection_qualities
 
     return data
 
@@ -491,5 +505,69 @@ def compute_rejection(logits, target, data, prefix=''):
         data[prefix+method.__name__]['non-rejected-accuracy'] = non_rejected_accuracies
         data[prefix+method.__name__]['classification-quality'] = classification_qualities
         data[prefix+method.__name__]['rejection-quality'] = rejection_qualities
+
+    return data
+
+def temperature_scaling(args, dataloader, data):
+    task = args.task
+    if args.dataset.startswith("wds/"):
+        dataset_name = args.dataset.replace("wds/", "", 1)
+    else:
+        dataset_name = args.dataset
+    if task == "auto":
+        task = get_dataset_default_task(dataset_name)
+
+    model, transform, tokenizer = load_clip(
+        model_type=args.model_type,
+        model_name=args.model,
+        pretrained=args.pretrained,
+        cache_dir=args.model_cache_dir,
+        device=args.device
+    )
+    model.eval()
+    collate_fn = get_dataset_collate_fn(args.dataset)
+    dataset_root = args.dataset_root.format(dataset=dataset_name, dataset_cleaned=dataset_name.replace("/", "-"))
+    transform 
+    # we also need the train split for linear probing.
+    train_dataset = build_dataset(
+        dataset_name=args.dataset, 
+        root=dataset_root, 
+        transform=transform, 
+        split='train', 
+        annotation_file=args.annotation_file,
+        download=True,
+    )
+    train_dataloader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=args.batch_size, 
+        shuffle=False, num_workers=args.num_workers, 
+        collate_fn=collate_fn, pin_memory=True,
+    )
+
+
+    classnames = train_dataset.classes if hasattr(train_dataset, "classes") else None
+    zeroshot_templates = train_dataset.templates if hasattr(train_dataset, "templates") else None
+    assert (zeroshot_templates is not None and classnames is not None), "Dataset does not support classification"
+    if args.cupl:
+        assert (zeroshot_templates is not None), "Dataset does not support CuPL prompts"        
+    if args.verbose:
+        print(f"Zero-shot templates: {zeroshot_templates}")
+
+    load_clfs = args.load_clfs
+    if len(load_clfs) > 0:
+        n = len(load_clfs)
+        classifier = torch.load(load_clfs[0], map_location='cpu') / n
+        for i in range(1, n):
+            classifier = classifier + torch.load(load_clfs[i], map_location='cpu') / n
+        classifier = classifier.to(device)
+    else:
+        classifier = zero_shot_classifier(model, tokenizer, classnames, zeroshot_templates, args.device, )
+    
+    scaled_model = ModelWithTemperature(model)
+    scaled_model.set_temperature(train_dataloader, classifier)
+
+    logits, target = run_classification(scaled_model, classifier, dataloader, args.device, temperature_scaling=True, amp=True)
+    dataset_name = args.dataset.split("/")[-1]
+  
+    data = compute_rejection(logits, target, data, prefix='temperature_scaled_') 
 
     return data

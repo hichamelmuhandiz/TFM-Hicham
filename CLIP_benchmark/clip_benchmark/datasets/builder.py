@@ -590,6 +590,7 @@ def build_wds_dataset(dataset_name, transform, split="test", data_dir="root", ca
         url_head = "/".join(split_url_head)
         metadata_dir = "/".join([url_head, "raw", url_path])
         tardata_dir = "/".join([url_head, "resolve", url_path])
+        print(tardata_dir)
     else:
         metadata_dir = tardata_dir = data_dir
     # Get number of shards

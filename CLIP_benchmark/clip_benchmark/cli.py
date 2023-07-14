@@ -321,7 +321,7 @@ def run(args):
         json.dump(dump, f)
 
     if args.task == "zeroshot_classification":
-        rejection_output = 'rejection.json'
+        rejection_output = 'zeroshot_classification.json'
         write_json(rejection_output, dataset_slug, rejection_data_to_save)
     elif args.task == "linear_probe":
         linear_probe_output = 'linear_probe.json'
