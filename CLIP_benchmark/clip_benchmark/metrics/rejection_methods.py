@@ -173,7 +173,7 @@ def reject_based_on_montecarlo_dropout(model, classifier, dataloader, device, am
          all_logits.append(logits.cpu().numpy())
     
     mean_prediction = np.mean(all_logits, axis=0)
-    data = compute_rejection(mean_prediction, target, data, prefix='MCD-') 
+    data = compute_rejection(torch.from_numpy(mean_prediction), target, data, prefix='MCD-') 
 
     # all_logits = np.array(all_logits)
     # # Calculate averaged prediction
@@ -219,7 +219,7 @@ def reject_based_on_montecarlo_patch_dropout(args, classifier, dataloader, devic
          all_logits.append(logits.cpu().numpy())
     
     mean_prediction = np.mean(all_logits, axis=0)
-    data = compute_rejection(mean_prediction, target, data, prefix='MCPatchDropout-') 
+    data = compute_rejection(torch.from_numpy(mean_prediction), target, data, prefix='MCPatchDropout-') 
   
     sorted_logits, sorted_preds, sorted_targets = calculate_variance_and_sort_logits_montecarlo(all_logits, target)
 
@@ -428,7 +428,7 @@ def compute_ensembles(args, data):
         all_logits.append(logits.cpu().numpy())
 
     mean_prediction = np.mean(all_logits, axis=0)
-    data = compute_rejection(mean_prediction, target, data, prefix='DeepEnsemble-') 
+    data = compute_rejection(torch.from_numpy(mean_prediction), target, data, prefix='DeepEnsemble-') 
 
     sorted_logits, sorted_preds, sorted_targets = calculate_variance_and_sort_logits_montecarlo(all_logits, target)
 
