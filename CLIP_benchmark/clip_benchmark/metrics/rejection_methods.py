@@ -171,6 +171,9 @@ def reject_based_on_montecarlo_dropout(model, classifier, dataloader, device, am
     for i in range(N):
          logits, target = run_classification(model, classifier, dataloader, device, amp=amp)
          all_logits.append(logits.cpu().numpy())
+    
+    mean_prediction = np.mean(all_logits, axis=0)
+    data = compute_rejection(mean_prediction, target, data, prefix='MCD-') 
 
     # all_logits = np.array(all_logits)
     # # Calculate averaged prediction
@@ -214,6 +217,9 @@ def reject_based_on_montecarlo_patch_dropout(args, classifier, dataloader, devic
     for i in range(N):
          logits, target = run_classification(model, classifier, dataloader, device, amp=amp)
          all_logits.append(logits.cpu().numpy())
+    
+    mean_prediction = np.mean(all_logits, axis=0)
+    data = compute_rejection(mean_prediction, target, data, prefix='MCPatchDropout-') 
   
     sorted_logits, sorted_preds, sorted_targets = calculate_variance_and_sort_logits_montecarlo(all_logits, target)
 
@@ -421,6 +427,8 @@ def compute_ensembles(args, data):
         logits, target = run_classification(model, classifier, dataloader, device, amp=True)
         all_logits.append(logits.cpu().numpy())
 
+    mean_prediction = np.mean(all_logits, axis=0)
+    data = compute_rejection(mean_prediction, target, data, prefix='DeepEnsemble-') 
 
     sorted_logits, sorted_preds, sorted_targets = calculate_variance_and_sort_logits_montecarlo(all_logits, target)
 
@@ -451,6 +459,10 @@ def compute_prompt_embedding_space_ensembles(model, dataloader, tokenizer, class
         logits, target = run_classification(model, classifier, dataloader, device, amp=True)
         all_logits.append(logits.cpu().numpy())
 
+    for i in range(len(all_logits)):
+        data = compute_rejection(torch.from_numpy(all_logits[i]), target, data, prefix='SinglePrompt'+str(i)) 
+
+
     sorted_logits, sorted_preds, sorted_targets = calculate_variance_and_sort_logits_montecarlo(all_logits, target)
 
     rejection_percentages = np.arange(0. , 1., 0.05)
@@ -459,5 +471,25 @@ def compute_prompt_embedding_space_ensembles(model, dataloader, tokenizer, class
     data['prompt-embedding-space-ensembles']['non-rejected-accuracy'] = non_rejected_accuracies
     data['prompt-embedding-space-ensembles']['classification-quality'] = classification_qualities
     data['prompt-embedding-space-ensembles']['rejection-quality'] = rejection_qualities
+
+    return data
+
+
+def compute_rejection(logits, target, data, prefix=''):
+
+    methods = [reject_based_on_softmax_response, reject_based_on_least_confidence, reject_based_on_predictive_entropy, reject_based_on_margin_confidence, reject_based_on_ratio_confidence]
+    for method in methods:
+         # Call the process_function to get sorted 
+        sorted_logits, pred, sorted_targets = method(logits, target)
+        rejection_percentages = np.arange(0. , 1., 0.05)
+        non_rejected_accuracies, classification_qualities, rejection_qualities = compute_accuracy(sorted_logits, pred, sorted_targets, rejection_percentages)
+        # print("Method:", method.__name__)
+        # print("Non rejected accuracy", non_rejected_accuracies)
+        # print("Classification quality", classification_qualities)
+        # print("Rejection quality",rejection_qualities)
+        data[prefix+method.__name__] = {}
+        data[prefix+method.__name__]['non-rejected-accuracy'] = non_rejected_accuracies
+        data[prefix+method.__name__]['classification-quality'] = classification_qualities
+        data[prefix+method.__name__]['rejection-quality'] = rejection_qualities
 
     return data
