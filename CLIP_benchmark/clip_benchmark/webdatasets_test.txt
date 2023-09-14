@@ -1,0 +1,15 @@
+wds/cars
+wds/fgvc_aircraft
+wds/mnist
+wds/stl10
+wds/country211
+wds/vtab/caltech101
+wds/vtab/cifar10
+wds/vtab/cifar100
+wds/vtab/diabetic_retinopathy
+wds/vtab/dtd
+wds/vtab/eurosat
+wds/vtab/flowers
+wds/vtab/pets
+wds/imagenet1k
+wds/sun397
